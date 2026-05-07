@@ -1,0 +1,12 @@
+[default.global.parameters]
+stack_name = "shopping-list-app"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+confirm_changeset = true
+resolve_s3 = true
+region = "us-east-1"

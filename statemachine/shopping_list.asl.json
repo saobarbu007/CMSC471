@@ -1,0 +1,61 @@
+{
+  "Comment": "Shopping List AI Processor - orchestrates Fetch, Call (Textract), and Save steps.",
+  "StartAt": "FetchImage",
+  "States": {
+    "FetchImage": {
+      "Type": "Task",
+      "Resource": "${StepFunctionsFetchLambdaArn}",
+      "Comment": "Confirms the uploaded image exists in S3 and marks the job IN_PROGRESS.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "JobFailed", "ResultPath": "$.error" }],
+      "Next": "CallTextract"
+    },
+    "CallTextract": {
+      "Type": "Task",
+      "Resource": "${StepFunctionsCallLambdaArn}",
+      "Comment": "Calls Amazon Textract to extract text lines from the shopping list image.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "JobFailed", "ResultPath": "$.error" }],
+      "Next": "SaveRecords"
+    },
+    "SaveRecords": {
+      "Type": "Task",
+      "Resource": "${StepFunctionsSaveLambdaArn}",
+      "Comment": "Saves each extracted shopping item to the Records DynamoDB table and marks the job COMPLETE.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "JobFailed", "ResultPath": "$.error" }],
+      "Next": "JobSucceeded"
+    },
+    "JobSucceeded": {
+      "Type": "Succeed",
+      "Comment": "All steps completed successfully."
+    },
+    "JobFailed": {
+      "Type": "Fail",
+      "Comment": "One of the processing steps failed.",
+      "Error": "ProcessingFailed",
+      "Cause": "An error occurred during shopping list processing."
+    }
+  }
+}

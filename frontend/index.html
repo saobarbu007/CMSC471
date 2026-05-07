@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Shopping List AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:           #0D1410;
+      --bg2:          #131A15;
+      --bg3:          #1A2420;
+      --bg4:          #212E28;
+      --border:       #2A3C34;
+      --border-light: #354D43;
+      --green:        #4ADE80;
+      --green-dim:    #1E4433;
+      --green-glow:   rgba(74,222,128,0.12);
+      --green-glow2:  rgba(74,222,128,0.06);
+      --text:         #E8F0EB;
+      --text-muted:   #7A9988;
+      --text-dim:     #4A6556;
+      --red:          #F87171;
+      --red-dim:      #3B1A1A;
+      --amber:        #FBBF24;
+      --radius:       12px;
+      --radius-sm:    8px;
+      --font-display: 'DM Serif Display', Georgia, serif;
+      --font-body:    'DM Sans', system-ui, sans-serif;
+      --font-mono:    'DM Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* subtle noise overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.4;
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 24px 80px;
+    }
+
+    /* ── HEADER ── */
+    .header {
+      padding: 52px 0 40px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 48px;
+    }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .eyebrow::before {
+      content: '';
+      width: 20px;
+      height: 1px;
+      background: var(--green);
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2.5s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes pulse {
+      0%,100% { opacity:1; transform:scale(1); }
+      50% { opacity:0.45; transform:scale(0.75); }
+    }
+
+    h1 {
+      font-family: var(--font-display);
+      font-size: clamp(2.4rem, 5vw, 3.4rem);
+      font-weight: 400;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+    }
+
+    h1 em { font-style: italic; color: var(--green); }
+
+    .sub {
+      margin-top: 12px;
+      font-size: 14px;
+      color: var(--text-muted);
+      font-weight: 300;
+      max-width: 420px;
+    }
+
+    /* ── SECTION LABEL ── */
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-label::after {
+      content:''; flex:1; height:1px; background: var(--border);
+    }
+
+    /* ── UPLOAD CARD ── */
+    .upload-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 48px;
+      transition: border-color 0.2s;
+    }
+
+    .drop-zone {
+      padding: 48px 36px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      transition: background 0.2s;
+    }
+
+    .drop-zone.drag-over { background: var(--green-glow2); }
+
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0;
+      opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+
+    .drop-icon {
+      width: 52px; height: 52px;
+      border-radius: 50%;
+      background: var(--bg3);
+      border: 1px solid var(--border-light);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      transition: all 0.2s;
+    }
+
+    .drop-zone:hover .drop-icon {
+      background: var(--green-dim);
+      border-color: var(--green);
+      box-shadow: 0 0 16px var(--green-glow);
+    }
+
+    .drop-text { font-size: 14px; color: var(--text-muted); text-align: center; }
+    .drop-text strong { color: var(--text); font-weight: 500; }
+    .drop-hint { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
+
+    /* preview bar */
+    #preview-wrap {
+      display: none;
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+      align-items: center;
+      gap: 14px;
+      background: var(--bg3);
+    }
+    #preview-wrap.visible { display: flex; }
+
+    #preview-img {
+      width: 68px; height: 68px;
+      object-fit: cover;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-light);
+    }
+
+    .preview-info { flex:1; min-width:0; }
+    .preview-name {
+      font-size: 13px; font-weight: 500; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .preview-size { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-top: 2px; }
+
+    .preview-remove {
+      background: none; border: none;
+      color: var(--text-dim); cursor: pointer;
+      font-size: 17px; line-height: 1; padding: 4px;
+      transition: color 0.15s;
+    }
+    .preview-remove:hover { color: var(--red); }
+
+    /* footer row */
+    .upload-footer {
+      padding: 16px 22px;
+      display: flex; align-items: center; gap: 14px;
+    }
+
+    #status-bar { display:none; align-items:center; gap:8px; font-size:13px; }
+    #status-bar.visible { display: flex; }
+    #status-icon { font-size: 15px; flex-shrink: 0; }
+    #status-text { color: var(--text-muted); }
+    #status-text.success { color: var(--green); }
+    #status-text.error   { color: var(--red); }
+    #status-text.working { color: var(--amber); }
+
+    /* ── BUTTONS ── */
+    .btn {
+      font-family: var(--font-body);
+      font-size: 13px; font-weight: 500;
+      border: none; border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: inline-flex; align-items: center; gap: 7px;
+      transition: all 0.15s; white-space: nowrap;
+    }
+
+    .btn-primary { background: var(--green); color: #0D1410; padding: 10px 22px; }
+    .btn-primary:hover:not(:disabled) { background: #6ee7a0; box-shadow: 0 0 20px var(--green-glow); }
+    .btn-primary:disabled { background: var(--bg4); color: var(--text-dim); cursor: not-allowed; }
+
+    .btn-ghost {
+      background: transparent; color: var(--text-muted);
+      border: 1px solid var(--border); padding: 9px 16px;
+    }
+    .btn-ghost:hover { border-color: var(--border-light); color: var(--text); }
+
+    .btn-danger {
+      background: transparent; color: var(--red);
+      border: 1px solid transparent; padding: 6px 11px; font-size: 12px;
+    }
+    .btn-danger:hover { background: var(--red-dim); border-color: var(--red); }
+
+    .spinner {
+      width: 13px; height: 13px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── RECORDS ── */
+    .records-header {
+      display: flex; align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px; gap: 14px;
+    }
+
+    .records-title {
+      font-family: var(--font-display);
+      font-size: 1.5rem; font-weight: 400;
+    }
+
+    .records-count {
+      font-family: var(--font-mono); font-size: 11px;
+      color: var(--text-dim); background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 20px; padding: 3px 12px;
+    }
+
+    .empty-state {
+      background: var(--bg2);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 60px 32px; text-align: center;
+      animation: fadeIn 0.3s ease;
+    }
+    .empty-icon { font-size: 38px; margin-bottom: 14px; opacity: 0.4; }
+    .empty-title { font-size: 15px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; }
+    .empty-sub { font-size: 13px; color: var(--text-dim); }
+
+    .records-table-wrap {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      animation: fadeIn 0.3s ease;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+    thead tr { background: var(--bg3); border-bottom: 1px solid var(--border); }
+
+    th {
+      padding: 12px 16px; text-align: left;
+      font-family: var(--font-mono); font-size: 10px;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-dim); font-weight: 400;
+    }
+
+    tbody tr { border-bottom: 1px solid var(--border); transition: background 0.12s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--bg3); }
+
+    td { padding: 13px 16px; color: var(--text); vertical-align: middle; }
+    td.item-name { font-weight: 500; }
+    td.item-source {
+      font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+      max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    td.item-date { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+    td.item-actions { text-align: right; }
+
+    .row-idx {
+      display: inline-block; font-family: var(--font-mono); font-size: 11px;
+      color: var(--text-dim); background: var(--bg3);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 1px 7px; min-width: 28px; text-align: center;
+    }
+
+    /* ── TOAST ── */
+    #toast {
+      position: fixed; bottom: 26px; right: 26px;
+      background: var(--bg3); border: 1px solid var(--border-light);
+      border-radius: var(--radius-sm);
+      padding: 11px 18px; font-size: 13px; color: var(--text);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      transform: translateY(70px); opacity: 0;
+      transition: all 0.25s cubic-bezier(0.34,1.56,0.64,1);
+      z-index: 100; max-width: 300px;
+    }
+    #toast.show { transform: translateY(0); opacity: 1; }
+
+    @keyframes fadeIn {
+      from { opacity:0; transform:translateY(6px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+
+    @media (max-width:600px) {
+      th.hide-sm, td.hide-sm { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="eyebrow">
+      <span class="status-dot"></span>
+      AWS Serverless · Powered by Textract
+    </div>
+    <h1>Shopping<br><em>List AI</em></h1>
+    <p class="sub">Upload a photo of your handwritten list — items are extracted automatically.</p>
+  </header>
+
+  <!-- UPLOAD -->
+  <div class="section-label">Upload</div>
+  <div class="upload-card">
+
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="file-input" accept="image/*" />
+      <div class="drop-icon">📷</div>
+      <div class="drop-text"><strong>Choose a photo</strong> or drag it here</div>
+      <div class="drop-hint">JPEG · PNG · WEBP</div>
+    </div>
+
+    <div id="preview-wrap">
+      <img id="preview-img" alt="preview" />
+      <div class="preview-info">
+        <div class="preview-name" id="preview-name"></div>
+        <div class="preview-size" id="preview-size"></div>
+      </div>
+      <button class="preview-remove" onclick="clearFile()">✕</button>
+    </div>
+
+    <div class="upload-footer">
+      <div id="status-bar">
+        <span class="status-icon" id="status-icon">⏳</span>
+        <span id="status-text"></span>
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn btn-primary" id="upload-btn" onclick="submitImage()">
+        Upload &amp; Process
+      </button>
+    </div>
+  </div>
+
+  <!-- RECORDS -->
+  <div class="records-header">
+    <div style="display:flex;align-items:center;gap:12px">
+      <span class="records-title">Your Items</span>
+      <span class="records-count" id="records-count">—</span>
+    </div>
+    <button class="btn btn-ghost" onclick="loadRecords()">
+      <span id="refresh-spinner" style="display:none" class="spinner"></span>
+      ↻ Refresh
+    </button>
+  </div>
+  <div id="records-container"></div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+  // ── Replace with your API Gateway URL after sam deploy ──
+  const API_BASE = "https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/Prod";
+
+  let pollInterval = null;
+  let selectedFile = null;
+
+  // File select
+  document.getElementById("file-input").addEventListener("change", e => {
+    if (e.target.files[0]) setFile(e.target.files[0]);
+  });
+
+  // Drag & drop
+  const dz = document.getElementById("drop-zone");
+  dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("drag-over"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("drag-over"));
+  dz.addEventListener("drop", e => {
+    e.preventDefault(); dz.classList.remove("drag-over");
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith("image/")) setFile(f);
+  });
+
+  function setFile(file) {
+    selectedFile = file;
+    document.getElementById("preview-img").src = URL.createObjectURL(file);
+    document.getElementById("preview-name").textContent = file.name;
+    document.getElementById("preview-size").textContent = fmtBytes(file.size);
+    document.getElementById("preview-wrap").classList.add("visible");
+    hideStatus();
+  }
+
+  function clearFile() {
+    selectedFile = null;
+    document.getElementById("file-input").value = "";
+    document.getElementById("preview-wrap").classList.remove("visible");
+    hideStatus();
+  }
+
+  function fmtBytes(b) {
+    if (b < 1024) return b + " B";
+    if (b < 1048576) return (b/1024).toFixed(1) + " KB";
+    return (b/1048576).toFixed(1) + " MB";
+  }
+
+  async function submitImage() {
+    if (!selectedFile) { toast("⚠️ Please select an image first."); return; }
+    const btn = document.getElementById("upload-btn");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Uploading...';
+    showStatus("working", "⏳", "Uploading image...");
+    try {
+      const b64 = await toBase64(selectedFile);
+      const res = await fetch(`${API_BASE}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: b64, file_name: selectedFile.name, content_type: selectedFile.type })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upload failed.");
+      showStatus("working", "⚙️", "Processing with Textract...");
+      btn.innerHTML = '<span class="spinner"></span> Processing...';
+      startPolling(data.job_id);
+    } catch (err) {
+      showStatus("error", "✕", err.message);
+      resetBtn();
+    }
+  }
+
+  function startPolling(jobId) {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/poll/${jobId}`);
+        const data = await res.json();
+        if (data.status === "COMPLETE") {
+          clearInterval(pollInterval);
+          const n = data.item_count;
+          showStatus("success", "✓", `Done — ${n} item${n !== 1 ? "s" : ""} extracted.`);
+          toast(`✓ ${n} item${n !== 1 ? "s" : ""} added to your list.`);
+          resetBtn(); clearFile(); loadRecords();
+        } else if (data.status === "FAILED") {
+          clearInterval(pollInterval);
+          showStatus("error", "✕", "Processing failed. Please try again.");
+          resetBtn();
+        }
+      } catch {
+        clearInterval(pollInterval);
+        showStatus("error", "✕", "Lost connection. Check your network.");
+        resetBtn();
+      }
+    }, 3000);
+  }
+
+  async function loadRecords() {
+    const container = document.getElementById("records-container");
+    const sp = document.getElementById("refresh-spinner");
+    sp.style.display = "inline-block";
+    try {
+      const res = await fetch(`${API_BASE}/records`);
+      const data = await res.json();
+      const records = data.records || [];
+      const cnt = records.length;
+      document.getElementById("records-count").textContent =
+        cnt === 0 ? "0 items" : `${cnt} item${cnt !== 1 ? "s" : ""}`;
+
+      if (cnt === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">🛒</div>
+            <div class="empty-title">No items yet</div>
+            <div class="empty-sub">Upload a photo of your handwritten shopping list to get started.</div>
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="records-table-wrap">
+          <table>
+            <thead><tr>
+              <th style="width:44px">#</th>
+              <th>Item</th>
+              <th class="hide-sm">Source</th>
+              <th class="hide-sm">Added</th>
+              <th style="width:80px;text-align:right">Action</th>
+            </tr></thead>
+            <tbody id="records-tbody">
+              ${records.map((r,i) => `
+                <tr id="row-${r.record_id}">
+                  <td><span class="row-idx">${i+1}</span></td>
+                  <td class="item-name">${esc(r.item_name)}</td>
+                  <td class="item-source hide-sm" title="${esc(r.source_image||'')}">
+                    ${esc((r.source_image||'').split('/').pop() || '—')}
+                  </td>
+                  <td class="item-date hide-sm">${fmtDate(r.created_at)}</td>
+                  <td class="item-actions">
+                    <button class="btn btn-danger" onclick="deleteRecord('${r.record_id}')">Remove</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    } catch (err) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">⚠️</div>
+          <div class="empty-title">Failed to load</div>
+          <div class="empty-sub">${esc(err.message)}</div>
+        </div>`;
+    } finally {
+      sp.style.display = "none";
+    }
+  }
+
+  async function deleteRecord(id) {
+    if (!confirm("Remove this item?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/records/${id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Delete failed.");
+      const row = document.getElementById(`row-${id}`);
+      if (row) {
+        row.style.transition = "opacity 0.18s, transform 0.18s";
+        row.style.opacity = "0"; row.style.transform = "translateX(10px)";
+        setTimeout(() => { row.remove(); recheckEmpty(); }, 200);
+      }
+      toast("✓ Item removed.");
+    } catch (err) { toast("✕ " + err.message); }
+  }
+
+  function recheckEmpty() {
+    const tbody = document.getElementById("records-tbody");
+    const cnt = tbody ? tbody.children.length : 0;
+    document.getElementById("records-count").textContent =
+      cnt === 0 ? "0 items" : `${cnt} item${cnt !== 1 ? "s" : ""}`;
+    if (cnt === 0) loadRecords();
+  }
+
+  function showStatus(type, icon, text) {
+    document.getElementById("status-bar").classList.add("visible");
+    document.getElementById("status-icon").textContent = icon;
+    const t = document.getElementById("status-text");
+    t.textContent = text; t.className = type;
+  }
+
+  function hideStatus() {
+    document.getElementById("status-bar").classList.remove("visible");
+  }
+
+  let toastTimer;
+  function toast(msg) {
+    const el = document.getElementById("toast");
+    el.textContent = msg; el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
+  }
+
+  function resetBtn() {
+    const btn = document.getElementById("upload-btn");
+    btn.disabled = false; btn.innerHTML = "Upload &amp; Process";
+  }
+
+  function toBase64(file) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]);
+      r.onerror = rej; r.readAsDataURL(file);
+    });
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  function fmtDate(iso) {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString("en-US",{month:"short",day:"numeric"}) +
+             " · " + d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+    } catch { return "—"; }
+  }
+
+  window.onload = loadRecords;
+</script>
+</body>
+</html>

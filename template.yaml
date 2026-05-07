@@ -1,0 +1,355 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Shopping List AI Processor - SAM Template
+  Processes handwritten shopping list photos via S3, Lambda, Step Functions, and DynamoDB.
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    MemorySize: 128
+    Environment:
+      Variables:
+        JOBS_TABLE: !Ref JobsTable
+        RECORDS_TABLE: !Ref RecordsTable
+        INBOX_BUCKET: !Ref InboxBucket
+
+# ─────────────────────────────────────────────
+# RESOURCES  (14 required)
+# ─────────────────────────────────────────────
+Resources:
+
+  # 1. API Gateway
+  ShoppingListApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: ShoppingListApi
+      StageName: Prod
+      Cors:
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+  # 2. Health Lambda
+  HealthLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: HealthLambda
+      CodeUri: lambdas/health/
+      Handler: health.lambda_handler
+      Description: Returns a 200 OK health-check response.
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShoppingListApi
+            Path: /health
+            Method: GET
+
+  # 3. S3 Bucket for index.html (Static Website Hosting)
+  StaticWebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "shopping-list-static-${AWS::AccountId}"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  StaticWebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticWebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${StaticWebsiteBucket}/*"
+
+  # 4. Static Proxy Lambda (serves the home page)
+  StaticProxyLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: StaticProxyLambda
+      CodeUri: lambdas/static_proxy/
+      Handler: static_proxy.lambda_handler
+      Description: Serves index.html from S3 static website bucket.
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          STATIC_BUCKET: !Ref StaticWebsiteBucket
+      Events:
+        ServeHome:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShoppingListApi
+            Path: /
+            Method: GET
+
+  # 5. Inbox S3 Bucket (holds uploaded images)
+  InboxBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "shopping-list-inbox-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldUploads
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # 6. Submit Process Lambda
+  SubmitProcessLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SubmitProcessLambda
+      CodeUri: lambdas/submit_process/
+      Handler: submit_process.lambda_handler
+      Description: Receives uploaded image, writes a job record, and starts the Step Functions state machine.
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref ShoppingListStateMachine
+      Events:
+        SubmitImage:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShoppingListApi
+            Path: /submit
+            Method: POST
+
+  # 7. Jobs DynamoDB Table
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: JobsTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+
+  # 8. Records DynamoDB Table
+  RecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: RecordsTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: record_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: record_id
+          KeyType: HASH
+
+  # 9. Step Functions State Machine
+  ShoppingListStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: ShoppingListStateMachine
+      DefinitionUri: statemachine/shopping_list.asl.json
+      DefinitionSubstitutions:
+        StepFunctionsFetchLambdaArn: !GetAtt StepFunctionsFetchLambda.Arn
+        StepFunctionsCallLambdaArn: !GetAtt StepFunctionsCallLambda.Arn
+        StepFunctionsSaveLambdaArn: !GetAtt StepFunctionsSaveLambda.Arn
+      Role: !GetAtt StateMachineExecutionRole.Arn
+
+  # 10. Step Functions Fetch Lambda
+  StepFunctionsFetchLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: StepFunctionsFetchLambda
+      CodeUri: lambdas/stepfunctions_fetch/
+      Handler: stepfunctions_fetch.lambda_handler
+      Description: Fetches the uploaded image from the Inbox S3 bucket for processing.
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  # 11. Step Functions Call Lambda
+  StepFunctionsCallLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: StepFunctionsCallLambda
+      CodeUri: lambdas/stepfunctions_call/
+      Handler: stepfunctions_call.lambda_handler
+      Description: Calls the AI service (e.g., Amazon Textract or Bedrock) to extract shopping list items from the image.
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  # 12. Step Functions Save Lambda
+  StepFunctionsSaveLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: StepFunctionsSaveLambda
+      CodeUri: lambdas/stepfunctions_save/
+      Handler: stepfunctions_save.lambda_handler
+      Description: Saves the extracted shopping list items into the Records DynamoDB table.
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  # 13. Poll Lambda (checks processing status)
+  PollLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: PollLambda
+      CodeUri: lambdas/poll/
+      Handler: poll.lambda_handler
+      Description: Checks the Jobs table for the current processing status of a submitted job.
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        PollStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShoppingListApi
+            Path: /poll/{job_id}
+            Method: GET
+
+  # 14. Records Lambda (retrieves or deletes shopping list items)
+  RecordsLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: RecordsLambda
+      CodeUri: lambdas/records/
+      Handler: records.lambda_handler
+      Description: Retrieves all shopping list records or deletes individual items/records from DynamoDB.
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        GetRecords:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShoppingListApi
+            Path: /records
+            Method: GET
+        DeleteRecord:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShoppingListApi
+            Path: /records/{record_id}
+            Method: DELETE
+
+  # ─────────────────────────────────────────────
+  # IAM ROLES
+  # ─────────────────────────────────────────────
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaAppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt JobsTable.Arn
+                  - !GetAtt RecordsTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${InboxBucket}"
+                  - !Sub "arn:aws:s3:::${InboxBucket}/*"
+                  - !Sub "arn:aws:s3:::${StaticWebsiteBucket}"
+                  - !Sub "arn:aws:s3:::${StaticWebsiteBucket}/*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref ShoppingListStateMachine
+              - Effect: Allow
+                Action:
+                  - textract:DetectDocumentText
+                  - textract:AnalyzeDocument
+                Resource: "*"
+
+  StateMachineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StateMachineExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StateMachineInvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt StepFunctionsFetchLambda.Arn
+                  - !GetAtt StepFunctionsCallLambda.Arn
+                  - !GetAtt StepFunctionsSaveLambda.Arn
+
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
+Outputs:
+  ApiEndpoint:
+    Description: Base URL for the API Gateway
+    Value: !Sub "https://${ShoppingListApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+
+  HealthEndpoint:
+    Description: Health check endpoint
+    Value: !Sub "https://${ShoppingListApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/health"
+
+  SubmitEndpoint:
+    Description: Endpoint to submit a shopping list image
+    Value: !Sub "https://${ShoppingListApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/submit"
+
+  PollEndpoint:
+    Description: Endpoint to poll job status
+    Value: !Sub "https://${ShoppingListApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/poll/{job_id}"
+
+  RecordsEndpoint:
+    Description: Endpoint to retrieve or delete shopping list records
+    Value: !Sub "https://${ShoppingListApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/records"
+
+  StaticWebsiteURL:
+    Description: S3 static website URL for index.html
+    Value: !GetAtt StaticWebsiteBucket.WebsiteURL
+
+  InboxBucketName:
+    Description: Name of the inbox S3 bucket for uploaded images
+    Value: !Ref InboxBucket
+
+  JobsTableName:
+    Description: DynamoDB Jobs table name
+    Value: !Ref JobsTable
+
+  RecordsTableName:
+    Description: DynamoDB Records table name
+    Value: !Ref RecordsTable
+
+  StateMachineArn:
+    Description: ARN of the Step Functions state machine
+    Value: !Ref ShoppingListStateMachine
