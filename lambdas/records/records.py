@@ -1,111 +1,17 @@
 import json
 import os
 import boto3
-from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Attr
 
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
 
-RECORDS_TABLE = os.environ.get("RECORDS_TABLE", "")
-JOBS_TABLE = os.environ.get("JOBS_TABLE", "")
-INBOX_BUCKET = os.environ.get("INBOX_BUCKET", "")
+RECORDS_TABLE = os.environ["RECORDS_TABLE"]
+JOBS_TABLE    = os.environ["JOBS_TABLE"]
+INBOX_BUCKET  = os.environ["INBOX_BUCKET"]
 
-
-def lambda_handler(event, context):
-    """
-    Handles two routes:
-      GET  /records             -> Returns all shopping list records from DynamoDB.
-      DELETE /records/{record_id} -> Deletes a single record from DynamoDB.
-                                     If it's the last record for a job, also deletes
-                                     the source image from S3 and the job entry.
-    """
-    http_method = event.get("httpMethod", "GET")
-    path_params = event.get("pathParameters") or {}
-    record_id = path_params.get("record_id")
-
-    if http_method == "GET":
-        return get_all_records()
-    elif http_method == "DELETE" and record_id:
-        return delete_record(record_id)
-    else:
-        return _response(400, {"error": "Unsupported method or missing record_id."})
-
-
-# ── GET /records ────────────────────────────────────────────────────────────────
-def get_all_records():
-    try:
-        table = dynamodb.Table(RECORDS_TABLE)
-        result = table.scan()
-        items = result.get("Items", [])
-
-        # Handle DynamoDB pagination
-        while "LastEvaluatedKey" in result:
-            result = table.scan(ExclusiveStartKey=result["LastEvaluatedKey"])
-            items.extend(result.get("Items", []))
-
-        # Sort by created_at descending (newest first)
-        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-
-        return _response(200, {
-            "records": items,
-            "count": len(items)
-        })
-
-    except ClientError as e:
-        return _response(500, {"error": "Failed to retrieve records.", "detail": str(e)})
-
-
-# ── DELETE /records/{record_id} ─────────────────────────────────────────────────
-def delete_record(record_id):
-    try:
-        records_table = dynamodb.Table(RECORDS_TABLE)
-        jobs_table = dynamodb.Table(JOBS_TABLE)
-
-        # ── Fetch the record first to get job_id and source image ────────────
-        result = records_table.get_item(Key={"record_id": record_id})
-        item = result.get("Item")
-
-        if not item:
-            return _response(404, {"error": f"Record '{record_id}' not found."})
-
-        job_id = item.get("job_id")
-        source_image = item.get("source_image")
-
-        # ── Delete the individual record ─────────────────────────────────────
-        records_table.delete_item(Key={"record_id": record_id})
-
-        # ── Check if any records remain for this job ─────────────────────────
-        if job_id:
-            remaining = records_table.scan(
-                FilterExpression=boto3.dynamodb.conditions.Attr("job_id").eq(job_id)
-            )
-            remaining_items = remaining.get("Items", [])
-
-            # If no records remain, clean up the job and its S3 image
-            if len(remaining_items) == 0:
-                # Delete the source image from S3
-                if source_image and INBOX_BUCKET:
-                    try:
-                        s3.delete_object(Bucket=INBOX_BUCKET, Key=source_image)
-                    except ClientError:
-                        pass  # Best-effort S3 cleanup
-
-                # Delete the job record from DynamoDB
-                try:
-                    jobs_table.delete_item(Key={"job_id": job_id})
-                except ClientError:
-                    pass  # Best-effort job cleanup
-
-        return _response(200, {
-            "message": f"Record '{record_id}' deleted successfully.",
-            "record_id": record_id,
-            "job_id": job_id
-        })
-
-    except ClientError as e:
-        return _response(500, {"error": "Failed to delete record.", "detail": str(e)})
-    except Exception as e:
-        return _response(500, {"error": "Unexpected error.", "detail": str(e)})
+records_table = dynamodb.Table(RECORDS_TABLE)
+jobs_table    = dynamodb.Table(JOBS_TABLE)
 
 
 def _response(status_code, body):
@@ -113,7 +19,71 @@ def _response(status_code, body):
         "statusCode": status_code,
         "headers": {
             "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
+            "Access-Control-Allow-Origin": "*",
         },
-        "body": json.dumps(body, default=str)
+        "body": json.dumps(body),
     }
+
+
+def lambda_handler(event, context):
+    method      = event.get("httpMethod", "")
+    path_params = event.get("pathParameters") or {}
+    record_id   = path_params.get("record_id")
+    resource    = event.get("resource", "")
+
+    # ── GET /records ──────────────────────────────────────────────────────────
+    if method == "GET":
+        result = records_table.scan()
+        items  = result.get("Items", [])
+        # Sort newest first; fall back gracefully if created_at is missing
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return _response(200, {"items": items})
+
+    # ── DELETE /records/{record_id} ───────────────────────────────────────────
+    if method == "DELETE" and record_id:
+        # Fetch the record so we know job_id and s3_key before deleting
+        resp = records_table.get_item(Key={"record_id": record_id})
+        item = resp.get("Item")
+        if not item:
+            return _response(404, {"error": "Record not found"})
+
+        job_id = item.get("job_id")
+        s3_key = item.get("s3_key")
+
+        # Delete the record
+        records_table.delete_item(Key={"record_id": record_id})
+
+        # Check if any sibling records remain for the same job
+        siblings = records_table.scan(
+            FilterExpression=Attr("job_id").eq(job_id)
+        ).get("Items", [])
+
+        if not siblings:
+            # Last item for this job — clean up S3 image and job record
+            if s3_key:
+                try:
+                    s3.delete_object(Bucket=INBOX_BUCKET, Key=s3_key)
+                except Exception:
+                    pass  # Don't fail the delete if S3 cleanup errors
+            jobs_table.delete_item(Key={"job_id": job_id})
+
+        return _response(200, {"deleted": record_id})
+
+    # ── PUT /records/{record_id}/star ─────────────────────────────────────────
+    if method == "PUT" and record_id and resource.endswith("/star"):
+        # Confirm the record exists before updating
+        resp = records_table.get_item(Key={"record_id": record_id})
+        if not resp.get("Item"):
+            return _response(404, {"error": "Record not found"})
+
+        body = json.loads(event.get("body") or "{}")
+        starred = bool(body.get("starred", True))
+
+        records_table.update_item(
+            Key={"record_id": record_id},
+            UpdateExpression="SET starred = :val",
+            ExpressionAttributeValues={":val": starred},
+        )
+        return _response(200, {"record_id": record_id, "starred": starred})
+
+    return _response(400, {"error": "Unsupported route"})

@@ -1,77 +1,87 @@
-import json
-import os
 import boto3
-from botocore.exceptions import ClientError
+import os
+import json
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 textract = boto3.client("textract")
-dynamodb = boto3.resource("dynamodb")
 
-JOBS_TABLE = os.environ.get("JOBS_TABLE", "")
+# Items whose confidence falls below this threshold are flagged as uncertain
+# rather than saved as confirmed. Default is 80% if not set in environment.
+CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "80.0"))
 
 
 def lambda_handler(event, context):
     """
-    Step 2 of the state machine workflow.
-    Calls Amazon Textract to extract text from the uploaded shopping list image.
-    Parses the raw Textract response into a clean list of shopping items.
-    Passes the extracted items downstream to the Save Lambda.
+    Step 2 of the state machine: call Amazon Textract on the uploaded image
+    and sort detected words into confirmed vs. uncertain buckets based on
+    each word's confidence score.
+
+    Expects event keys:
+        bucket  (str)  – S3 bucket name
+        key     (str)  – S3 object key of the image
+        job_id  (str)  – job identifier (passed through unchanged)
+
+    Returns the original event enriched with:
+        confirmed_items  (list[str])  – high-confidence detected words
+        uncertain_items  (list[dict]) – low-confidence words with their scores
+        raw_blocks       (list[dict]) – full Textract LINE blocks for reference
     """
-    job_id = event.get("job_id")
-    s3_key = event.get("s3_key")
-    bucket = event.get("bucket")
+    bucket = event["bucket"]
+    key = event["key"]
+    job_id = event["job_id"]
 
-    if not all([job_id, s3_key, bucket]):
-        raise ValueError("Missing required fields: job_id, s3_key, bucket")
-
-    try:
-        # ── Call Textract ───────────────────────────────────────────────────
-        response = textract.detect_document_text(
-            Document={
-                "S3Object": {
-                    "Bucket": bucket,
-                    "Name": s3_key
-                }
-            }
-        )
-
-        # ── Parse Textract blocks into plain text lines ─────────────────────
-        lines = []
-        for block in response.get("Blocks", []):
-            if block.get("BlockType") == "LINE":
-                text = block.get("Text", "").strip()
-                if text:
-                    lines.append(text)
-
-        # ── Build structured shopping items ─────────────────────────────────
-        items = []
-        for line in lines:
-            items.append({
-                "item_name": line,
-                "quantity": None,       # Could be parsed further with NLP
-                "checked": False
-            })
-
-        # ── Update job with item count ───────────────────────────────────────
-        table = dynamodb.Table(JOBS_TABLE)
-        from datetime import datetime, timezone
-        table.update_item(
-            Key={"job_id": job_id},
-            UpdateExpression="SET item_count = :count, updated_at = :ts",
-            ExpressionAttributeValues={
-                ":count": len(items),
-                ":ts": datetime.now(timezone.utc).isoformat()
-            }
-        )
-
-        return {
+    logger.info(
+        json.dumps({
             "job_id": job_id,
-            "s3_key": s3_key,
+            "action": "textract_call",
             "bucket": bucket,
-            "items": items,
-            "item_count": len(items)
-        }
+            "key": key,
+            "confidence_threshold": CONFIDENCE_THRESHOLD,
+        })
+    )
 
-    except ClientError as e:
-        raise RuntimeError(f"Textract error: {str(e)}")
-    except Exception as e:
-        raise RuntimeError(f"Unexpected error in Call Lambda: {str(e)}")
+    response = textract.detect_document_text(
+        Document={"S3Object": {"Bucket": bucket, "Name": key}}
+    )
+
+    confirmed_items = []
+    uncertain_items = []
+    raw_blocks = []
+
+    for block in response.get("Blocks", []):
+        # Only process LINE blocks so we get whole line text rather than
+        # individual words; LINE blocks still carry a per-line confidence.
+        if block.get("BlockType") != "LINE":
+            continue
+
+        text = block.get("Text", "").strip()
+        confidence = block.get("Confidence", 0.0)
+
+        if not text:
+            continue
+
+        raw_blocks.append({"text": text, "confidence": confidence})
+
+        if confidence >= CONFIDENCE_THRESHOLD:
+            confirmed_items.append(text)
+        else:
+            uncertain_items.append({"text": text, "confidence": round(confidence, 2)})
+
+    logger.info(
+        json.dumps({
+            "job_id": job_id,
+            "action": "textract_complete",
+            "confirmed_count": len(confirmed_items),
+            "uncertain_count": len(uncertain_items),
+        })
+    )
+
+    return {
+        **event,
+        "confirmed_items": confirmed_items,
+        "uncertain_items": uncertain_items,
+        "raw_blocks": raw_blocks,
+    }
