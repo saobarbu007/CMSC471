@@ -3,7 +3,6 @@ import os
 import boto3
 from boto3.dynamodb.conditions import Attr
 
-# On DELETE, removes the record from DynamoDB, cleans up the source image in S3, and deletes the job entry if no records remain
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
 
@@ -41,6 +40,7 @@ def lambda_handler(event, context):
         items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return _response(200, {"items": items})
 
+    # On DELETE, removes the record from DynamoDB, cleans up the source image in S3, and deletes the job entry if no records remain
     # ── DELETE /records/{record_id} ───────────────────────────────────────────
     if method == "DELETE" and record_id:
         # Fetch the record so we know job_id and s3_key before deleting
