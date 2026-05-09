@@ -3,6 +3,7 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
+# Reads the job_id from the path parameter and queries DynamoDB to return the latest processing status to the frontend
 dynamodb = boto3.resource("dynamodb")
 
 JOBS_TABLE = os.environ.get("JOBS_TABLE", "")
