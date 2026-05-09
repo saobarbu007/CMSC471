@@ -32,6 +32,7 @@ def lambda_handler(event, context):
     record_id   = path_params.get("record_id")
     resource    = event.get("resource", "")
 
+    As a user, I want to view all my extracted shopping list items so that I can see what was recognized
     # ── GET /records ──────────────────────────────────────────────────────────
     if method == "GET":
         result = records_table.scan()
