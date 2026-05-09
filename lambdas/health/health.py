@@ -1,6 +1,6 @@
 import json
 
-
+# Lightweight endpoint that returns a fixed JSON payload so monitors and developers can verify the API gateway is reachable
 def lambda_handler(event, context):
     """
     Health check endpoint.
