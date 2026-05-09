@@ -3,6 +3,7 @@ import os
 import boto3
 from boto3.dynamodb.conditions import Attr
 
+# On DELETE, removes the record from DynamoDB, cleans up the source image in S3, and deletes the job entry if no records remain
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
 
