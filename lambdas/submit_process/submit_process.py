@@ -5,6 +5,7 @@ import boto3
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
+# Encodes the image as base64, uploads it to S3, and writes a PENDING job entry to DynamoDB before triggering the state machine
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 sfn = boto3.client("stepfunctions")
